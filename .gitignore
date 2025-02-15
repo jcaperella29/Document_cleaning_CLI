@@ -1,0 +1,19 @@
+# Python-related
+*.pyc
+*.pyo
+__pycache__/
+env/
+venv/
+
+# Flask-related
+instance/
+*.log
+
+# System-specific
+.DS_Store
+Thumbs.db
+
+# Specific project folders
+static/uploads/
+output/
+*.zip
