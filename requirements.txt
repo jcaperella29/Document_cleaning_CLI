@@ -1,0 +1,7 @@
+torch
+opencv-python
+h5py
+numpy
+pillow
+pytesseract
+scikit-image
