@@ -1,7 +1,12 @@
-torch
-opencv-python
-h5py
+argparse
 numpy
+opencv-python
 pillow
 pytesseract
 scikit-image
+torch
+torchvision
+h5py
+pdf2image
+PyMuPDF
+
