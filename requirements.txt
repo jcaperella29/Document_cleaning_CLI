@@ -1,4 +1,6 @@
-argparse
+
+fastapi
+uvicorn
 numpy
 opencv-python
 pillow
@@ -9,4 +11,3 @@ torchvision
 h5py
 pdf2image
 PyMuPDF
-
