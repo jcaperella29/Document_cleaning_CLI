@@ -17,6 +17,15 @@ OUTPUT_FOLDER = "processed"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"message": "Document Cleaning API is running!"}
+
+
 @app.post("/process-document/")
 async def process_document(file: UploadFile = File(...)):
     """Uploads and processes a document image."""
