@@ -1,37 +1,42 @@
+
+# Use slim Python base
 FROM python:3.10-slim
 
-# Set env variables
+# Prevent prompts during apt installs
+ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install dependencies
-RUN apt-get update && \
-    apt-get install -y \
-    build-essential \
+# Install required packages
+RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     libtesseract-dev \
     poppler-utils \
     ghostscript \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
-    libxrender1 \
     libxext6 \
-    unzip && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    libxrender-dev \
+    unzip \
+    gcc \
+    build-essential \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Create working directory
+# Set work directory
 WORKDIR /app
 
-# Install Python packages
+# Copy dependency files
 COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# Copy code
+# Copy the entire app
 COPY . .
 
-# Expose port
+# Expose the default port
 EXPOSE 8080
 
-# Run API
+# Start the app with uvicorn
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
