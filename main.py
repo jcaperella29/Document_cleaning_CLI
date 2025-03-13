@@ -1,12 +1,10 @@
 
-
 import os
 import cv2
 import torch
 import base64
 import shutil
 import tempfile
-import uvicorn
 import numpy as np
 from pathlib import Path
 from zipfile import ZipFile
@@ -28,6 +26,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+# ✅ FastAPI app instance exposed to Uvicorn (main:app)
 app = FastAPI(title="Document Cleaning API")
 
 
@@ -43,12 +42,10 @@ def home():
 
 @app.post("/process-document/")
 async def process_document(file: UploadFile = File(...)):
-    """Process a single image and return cleaned version + base64"""
     input_path = os.path.join(UPLOAD_FOLDER, file.filename)
     output_img_path = os.path.join(OUTPUT_FOLDER, f"{Path(file.filename).stem}_cleaned.png")
     output_pdf_path = os.path.join(OUTPUT_FOLDER, f"{Path(file.filename).stem}.pdf")
 
-    # Save upload
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
@@ -75,7 +72,6 @@ async def process_document(file: UploadFile = File(...)):
 
 
 def are_images_similar(folder, threshold=0.85):
-    """Check if images are visually similar based on cosine similarity"""
     vectors = []
     for filename in os.listdir(folder):
         if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
@@ -98,7 +94,6 @@ def are_images_similar(folder, threshold=0.85):
 @app.post("/process-batch/")
 async def process_batch(file: UploadFile = File(...)):
     try:
-        # Prepare folders
         input_zip_path = os.path.join(TEMP_DIR, "input.zip")
         extracted_input_folder = os.path.join(TEMP_DIR, "unzipped_input")
         output_folder = os.path.join(TEMP_DIR, "processed_output")
@@ -107,15 +102,12 @@ async def process_batch(file: UploadFile = File(...)):
         os.makedirs(extracted_input_folder, exist_ok=True)
         os.makedirs(output_folder, exist_ok=True)
 
-        # Save uploaded .zip
         with open(input_zip_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Unzip input
         with ZipFile(input_zip_path, 'r') as zip_ref:
             zip_ref.extractall(extracted_input_folder)
 
-        # Determine similarity strategy
         is_similar = are_images_similar(extracted_input_folder)
 
         if is_similar:
@@ -138,7 +130,6 @@ async def process_batch(file: UploadFile = File(...)):
                 output_folder=output_folder,
                 auto_tune=True
             )
-
             result_note = "Images were similar — shared weight used."
         else:
             print("⚠️ Images differ — tuning weights per image.")
@@ -155,7 +146,6 @@ async def process_batch(file: UploadFile = File(...)):
                 )
             result_note = "Images were diverse — tuned per image (slower)."
 
-        # Zip results
         with ZipFile(output_zip_path, 'w') as zipf:
             for root, _, files in os.walk(output_folder):
                 for f in files:
@@ -177,10 +167,9 @@ async def process_batch(file: UploadFile = File(...)):
 
 @app.get("/download/{filename}")
 async def download_pdf(filename: str):
-    """Allow user to download individual cleaned PDF"""
     file_path = os.path.join(OUTPUT_FOLDER, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type='application/pdf', filename=filename)
     raise HTTPException(status_code=404, detail="File not found")
 
-# 🛑 NOTE: Uvicorn boot removed for GCP compatibility
+# ❌ Uvicorn run block intentionally removed for GCP Cloud Run
