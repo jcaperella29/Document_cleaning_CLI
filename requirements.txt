@@ -1,14 +1,14 @@
-python-multipart
-
 fastapi
 uvicorn
 numpy
-opencv-python
+opencv-python-headless
 pillow
 pytesseract
 scikit-image
+scikit-learn
 torch
 torchvision
 h5py
 pdf2image
 PyMuPDF
+python-multipart
