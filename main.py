@@ -8,44 +8,46 @@ import tempfile
 import numpy as np
 from pathlib import Path
 from zipfile import ZipFile
-
-from fastapi import FastAPI, UploadFile, File
+from PIL import Image
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
+from sklearn.metrics.pairwise import cosine_similarity
 
 from processor import batch_clean_documents, auto_select_best_weight
 
-# FastAPI instance
-app = FastAPI(title="Document Cleaner API")
-
-# Folders
+# 🔧 Configurable Paths
 UPLOAD_FOLDER = "uploads"
 OUTPUT_FOLDER = "processed"
 WEIGHTS_FOLDER = "model_weights"
+TEMP_DIR = "temp"
 
+# Init
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+app = FastAPI(title="Document Cleaning API")
 
 @app.get("/")
 def home():
     return {"message": "Document Cleaning API is running!"}
 
+
 @app.post("/process-document/")
 async def process_document(file: UploadFile = File(...)):
-    """Uploads and processes a single document image."""
+    """Process a single image and return cleaned version + base64"""
     input_path = os.path.join(UPLOAD_FOLDER, file.filename)
     output_img_path = os.path.join(OUTPUT_FOLDER, f"{Path(file.filename).stem}_cleaned.png")
     output_pdf_path = os.path.join(OUTPUT_FOLDER, f"{Path(file.filename).stem}.pdf")
 
-    # Save uploaded image
+    # Save upload
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # 🔍 Auto-select best weight
     best_weight_file = auto_select_best_weight(WEIGHTS_FOLDER, input_path)
     weights_path = os.path.join(WEIGHTS_FOLDER, best_weight_file)
-    print(f"✅ Using best weight: {weights_path}")
+    print(f"✅ Using best weight: {best_weight_file}")
 
-    # Run pipeline
     batch_clean_documents(
         weights_path=weights_path,
         input_folder=UPLOAD_FOLDER,
@@ -53,7 +55,6 @@ async def process_document(file: UploadFile = File(...)):
         auto_tune=True
     )
 
-    # Encode to base64
     with open(output_img_path, "rb") as img_file:
         encoded_img = base64.b64encode(img_file.read()).decode("utf-8")
 
@@ -64,48 +65,116 @@ async def process_document(file: UploadFile = File(...)):
         "download_pdf": f"/download/{Path(file.filename).stem}.pdf"
     }
 
-from fastapi import UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
-import shutil
-import os
-import zipfile
+
+def are_images_similar(folder, threshold=0.85):
+    """Check if images are visually similar based on cosine similarity"""
+    vectors = []
+    for filename in os.listdir(folder):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            img_path = os.path.join(folder, filename)
+            img = Image.open(img_path).convert("L").resize((128, 128))
+            vec = np.array(img).flatten()
+            vec = vec / np.linalg.norm(vec)
+            vectors.append(vec)
+
+    if len(vectors) < 2:
+        return True
+
+    sim_matrix = cosine_similarity(vectors)
+    sims = [sim_matrix[i][j] for i in range(len(vectors)) for j in range(i) if i != j]
+    avg_similarity = np.mean(sims)
+    print(f"🔬 Average image similarity: {avg_similarity:.2f}")
+    return avg_similarity >= threshold
+
 
 @app.post("/process-batch/")
 async def process_batch(file: UploadFile = File(...)):
     try:
-        # Save uploaded zip
-        input_path = "temp/input.zip"
-        with open(input_path, "wb") as buffer:
+        # Prepare folders
+        input_zip_path = os.path.join(TEMP_DIR, "input.zip")
+        extracted_input_folder = os.path.join(TEMP_DIR, "unzipped_input")
+        output_folder = os.path.join(TEMP_DIR, "processed_output")
+        output_zip_path = os.path.join(TEMP_DIR, "cleaned_docs.zip")
+
+        os.makedirs(extracted_input_folder, exist_ok=True)
+        os.makedirs(output_folder, exist_ok=True)
+
+        # Save uploaded .zip
+        with open(input_zip_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Process images
-        output_zip_path = "temp/cleaned_docs.zip"
-        run_cleaning_pipeline(input_path, output_zip_path)  # ⬅️ Make sure this finishes successfully
+        # Unzip input
+        with ZipFile(input_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extracted_input_folder)
 
-        # ✅ Check zip actually exists before returning
+        # Determine similarity strategy
+        is_similar = are_images_similar(extracted_input_folder)
+
+        if is_similar:
+            print("✅ Images are similar — using one shared best weight.")
+            sample_image = next(
+                (os.path.join(extracted_input_folder, f)
+                 for f in os.listdir(extracted_input_folder)
+                 if f.lower().endswith(('.png', '.jpg', '.jpeg'))),
+                None
+            )
+            if not sample_image:
+                raise HTTPException(status_code=400, detail="No valid image found.")
+
+            best_weight_file = auto_select_best_weight(WEIGHTS_FOLDER, sample_image)
+            weights_path = os.path.join(WEIGHTS_FOLDER, best_weight_file)
+
+            batch_clean_documents(
+                weights_path=weights_path,
+                input_folder=extracted_input_folder,
+                output_folder=output_folder,
+                auto_tune=True
+            )
+
+            result_note = "Images were similar — shared weight used."
+        else:
+            print("⚠️ Images differ — tuning weights per image.")
+            for img_file in os.listdir(extracted_input_folder):
+                if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    continue
+                img_path = os.path.join(extracted_input_folder, img_file)
+                weight_file = auto_select_best_weight(WEIGHTS_FOLDER, img_path)
+                batch_clean_documents(
+                    weights_path=os.path.join(WEIGHTS_FOLDER, weight_file),
+                    input_folder=extracted_input_folder,
+                    output_folder=output_folder,
+                    auto_tune=True
+                )
+            result_note = "Images were diverse — tuned per image (slower)."
+
+        # Zip results
+        with ZipFile(output_zip_path, 'w') as zipf:
+            for root, _, files in os.walk(output_folder):
+                for f in files:
+                    file_path = os.path.join(root, f)
+                    arcname = os.path.relpath(file_path, output_folder)
+                    zipf.write(file_path, arcname)
+
         if not os.path.exists(output_zip_path):
-            raise HTTPException(status_code=500, detail="Output ZIP file not created")
+            raise HTTPException(status_code=500, detail="ZIP not created")
 
-        # ✅ Optional: check file size > 0
-        if os.path.getsize(output_zip_path) < 1024:
-            raise HTTPException(status_code=500, detail="Output ZIP too small — likely failed")
+        return FileResponse(output_zip_path, media_type="application/zip", filename="cleaned_docs.zip", headers={
+            "X-Note": result_note
+        })
 
-        return FileResponse(output_zip_path, media_type="application/zip", filename="cleaned_docs.zip")
-    
     except Exception as e:
         print("🔥 SERVER ERROR:", str(e))
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
-
 @app.get("/download/{filename}")
 async def download_pdf(filename: str):
-    """Download cleaned PDF by filename."""
+    """Allow user to download individual cleaned PDF"""
     file_path = os.path.join(OUTPUT_FOLDER, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type='application/pdf', filename=filename)
-    return {"error": "File not found"}
+    raise HTTPException(status_code=404, detail="File not found")
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
-
