@@ -64,51 +64,39 @@ async def process_document(file: UploadFile = File(...)):
         "download_pdf": f"/download/{Path(file.filename).stem}.pdf"
     }
 
+from fastapi import UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
+import shutil
+import os
+import zipfile
+
 @app.post("/process-batch/")
 async def process_batch(file: UploadFile = File(...)):
-    """Accepts a zip file of images, returns a zip of processed outputs."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        zip_path = os.path.join(temp_dir, file.filename)
-        with open(zip_path, "wb") as buffer:
+    try:
+        # Save uploaded zip
+        input_path = "temp/input.zip"
+        with open(input_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Extract images
-        batch_input_dir = os.path.join(temp_dir, "unzipped")
-        os.makedirs(batch_input_dir, exist_ok=True)
-        with ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(batch_input_dir)
+        # Process images
+        output_zip_path = "temp/cleaned_docs.zip"
+        run_cleaning_pipeline(input_path, output_zip_path)  # ⬅️ Make sure this finishes successfully
 
-        # Clean output
-        if os.path.exists(OUTPUT_FOLDER):
-            shutil.rmtree(OUTPUT_FOLDER)
-        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+        # ✅ Check zip actually exists before returning
+        if not os.path.exists(output_zip_path):
+            raise HTTPException(status_code=500, detail="Output ZIP file not created")
 
-        # Select best model using first image
-        first_img = next((f for f in os.listdir(batch_input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))), None)
-        if not first_img:
-            return {"error": "No image files found in zip."}
-        first_img_path = os.path.join(batch_input_dir, first_img)
-        best_weight = auto_select_best_weight(WEIGHTS_FOLDER, first_img_path)
-        weights_path = os.path.join(WEIGHTS_FOLDER, best_weight)
+        # ✅ Optional: check file size > 0
+        if os.path.getsize(output_zip_path) < 1024:
+            raise HTTPException(status_code=500, detail="Output ZIP too small — likely failed")
 
-        # Process all images in the zip
-        batch_clean_documents(
-            weights_path=weights_path,
-            input_folder=batch_input_dir,
-            output_folder=OUTPUT_FOLDER,
-            auto_tune=True
-        )
+        return FileResponse(output_zip_path, media_type="application/zip", filename="cleaned_docs.zip")
+    
+    except Exception as e:
+        print("🔥 SERVER ERROR:", str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
-        # Zip processed results
-        zip_output_path = os.path.join(temp_dir, "processed_output.zip")
-        with ZipFile(zip_output_path, 'w') as zipf:
-            for root, _, files in os.walk(OUTPUT_FOLDER):
-                for file_name in files:
-                    abs_path = os.path.join(root, file_name)
-                    rel_path = os.path.relpath(abs_path, OUTPUT_FOLDER)
-                    zipf.write(abs_path, arcname=rel_path)
 
-        return FileResponse(zip_output_path, filename="cleaned_batch_output.zip", media_type="application/zip")
 
 @app.get("/download/{filename}")
 async def download_pdf(filename: str):
