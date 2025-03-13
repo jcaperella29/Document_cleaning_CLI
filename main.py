@@ -1,10 +1,12 @@
+
+
 import os
 import cv2
 import torch
 import base64
 import shutil
-import uvicorn
 import tempfile
+import uvicorn
 import numpy as np
 from pathlib import Path
 from zipfile import ZipFile
@@ -15,18 +17,24 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from processor import batch_clean_documents, auto_select_best_weight
 
-# 🔧 Configurable Paths
-UPLOAD_FOLDER = "uploads"
-OUTPUT_FOLDER = "processed"
-WEIGHTS_FOLDER = "model_weights"
-TEMP_DIR = "temp"
+# 🔧 GCP-Compatible Temp Paths
+BASE_DIR = "/tmp"
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+OUTPUT_FOLDER = os.path.join(BASE_DIR, "processed")
+TEMP_DIR = os.path.join(BASE_DIR, "temp")
 
-# Init
+# Init directories
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 app = FastAPI(title="Document Cleaning API")
+
+
+@app.on_event("startup")
+async def startup_event():
+    print("🚀 FastAPI app started on GCP!")
+
 
 @app.get("/")
 def home():
@@ -44,8 +52,8 @@ async def process_document(file: UploadFile = File(...)):
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    best_weight_file = auto_select_best_weight(WEIGHTS_FOLDER, input_path)
-    weights_path = os.path.join(WEIGHTS_FOLDER, best_weight_file)
+    best_weight_file = auto_select_best_weight("model_weights", input_path)
+    weights_path = os.path.join("model_weights", best_weight_file)
     print(f"✅ Using best weight: {best_weight_file}")
 
     batch_clean_documents(
@@ -121,8 +129,8 @@ async def process_batch(file: UploadFile = File(...)):
             if not sample_image:
                 raise HTTPException(status_code=400, detail="No valid image found.")
 
-            best_weight_file = auto_select_best_weight(WEIGHTS_FOLDER, sample_image)
-            weights_path = os.path.join(WEIGHTS_FOLDER, best_weight_file)
+            best_weight_file = auto_select_best_weight("model_weights", sample_image)
+            weights_path = os.path.join("model_weights", best_weight_file)
 
             batch_clean_documents(
                 weights_path=weights_path,
@@ -138,9 +146,9 @@ async def process_batch(file: UploadFile = File(...)):
                 if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
                     continue
                 img_path = os.path.join(extracted_input_folder, img_file)
-                weight_file = auto_select_best_weight(WEIGHTS_FOLDER, img_path)
+                weight_file = auto_select_best_weight("model_weights", img_path)
                 batch_clean_documents(
-                    weights_path=os.path.join(WEIGHTS_FOLDER, weight_file),
+                    weights_path=os.path.join("model_weights", weight_file),
                     input_folder=extracted_input_folder,
                     output_folder=output_folder,
                     auto_tune=True
@@ -175,7 +183,4 @@ async def download_pdf(filename: str):
         return FileResponse(file_path, media_type='application/pdf', filename=filename)
     raise HTTPException(status_code=404, detail="File not found")
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
-
-
+# 🛑 NOTE: Uvicorn boot removed for GCP compatibility
