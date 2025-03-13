@@ -9,9 +9,13 @@ from PIL import Image
 import pytesseract
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
-# Manually set Tesseract path
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+import sys
 
+# ✅ Auto-detect platform and set tesseract path safely
+if sys.platform == "win32":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 
 # DnCNN Model
