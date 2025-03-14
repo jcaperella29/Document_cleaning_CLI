@@ -156,9 +156,15 @@ async def process_batch(file: UploadFile = File(...)):
         if not os.path.exists(output_zip_path):
             raise HTTPException(status_code=500, detail="ZIP not created")
 
-        return FileResponse(output_zip_path, media_type="application/zip", filename="cleaned_docs.zip", headers={
-            "X-Note": result_note
-        })
+       return FileResponse(
+    output_zip_path,
+    media_type="application/zip",
+    filename="cleaned_docs.zip",
+    headers={
+        "X-Note": result_note.replace("—", "-")  # ASCII-safe
+    }
+)
+
 
     except Exception as e:
         print("🔥 SERVER ERROR:", str(e))
