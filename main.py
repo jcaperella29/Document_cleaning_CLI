@@ -1,5 +1,4 @@
-
-  import os
+import os
 import cv2
 import torch
 import base64
@@ -135,3 +134,5 @@ async def download_pdf(filename: str):
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type='application/pdf', filename=filename)
     raise HTTPException(status_code=404, detail="File not found")
+
+# ☁️ Uvicorn boot removed for GCP Cloud Run
