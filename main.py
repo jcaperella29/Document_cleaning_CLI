@@ -66,7 +66,6 @@ async def process_document(file: UploadFile = File(...)):
         "download_pdf": f"/download/{Path(file.filename).stem}.pdf"
     }
 
-
 @app.post("/process-batch/")
 async def process_batch(file: UploadFile = File(...)):
     try:
@@ -84,28 +83,35 @@ async def process_batch(file: UploadFile = File(...)):
         with ZipFile(input_zip_path, 'r') as zip_ref:
             zip_ref.extractall(extracted_input_folder)
 
-        print("🧠 Sampling first 3 images to auto-select best weight...")
+        print("🧠 Sampling percentage of batch to auto-select best weight...")
 
-        # Step 1: Get first 3 valid images
+        # Step 1: Gather valid image files
         image_files = [f for f in os.listdir(extracted_input_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        image_files = image_files[:3]
 
         if not image_files:
             raise HTTPException(status_code=400, detail="No valid images found in ZIP.")
 
-        # Step 2: Auto-select best weights for the first 3
+        # Step 2: Adaptive sample logic
+        sample_percent = 0.2
+        max_samples = 10
+        num_samples = min(max(1, int(len(image_files) * sample_percent)), max_samples)
+        sampled_images = image_files[:num_samples]
+
+        print(f"📊 Sampling {num_samples} of {len(image_files)} total images...")
+
+        # Step 3: Select best weights
         weight_votes = []
-        for img_file in image_files:
+        for img_file in sampled_images:
             img_path = os.path.join(extracted_input_folder, img_file)
             weight_file = auto_select_best_weight("model_weights", img_path)
             weight_votes.append(weight_file)
             print(f"🔍 {img_file} → {weight_file}")
 
-        # Step 3: Pick most common weight (mode)
+        # Step 4: Pick most voted weight
         best_weight_file = max(set(weight_votes), key=weight_votes.count)
-        print(f"🏆 Final selected weight: {best_weight_file} (from top 3)")
+        print(f"🏆 Selected shared weight: {best_weight_file}")
 
-        # Step 4: Clean full batch using that weight
+        # Step 5: Run batch clean with shared weight
         batch_clean_documents(
             weights_path=os.path.join("model_weights", best_weight_file),
             input_folder=extracted_input_folder,
@@ -113,9 +119,9 @@ async def process_batch(file: UploadFile = File(...)):
             auto_tune=True
         )
 
-        result_note = f"Sampled top 3 images. Using shared weight: {best_weight_file}"
+        result_note = f"Sampled {num_samples}/{len(image_files)} images. Using shared weight: {best_weight_file}"
 
-        # Step 5: Zip results
+        # Step 6: Zip up results
         with ZipFile(output_zip_path, 'w') as zipf:
             for root, _, files in os.walk(output_folder):
                 for f in files:
@@ -138,6 +144,7 @@ async def process_batch(file: UploadFile = File(...)):
     except Exception as e:
         print("🔥 SERVER ERROR:", str(e))
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
 
 @app.get("/download/{filename}")
 async def download_pdf(filename: str):
