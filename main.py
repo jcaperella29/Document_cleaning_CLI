@@ -1,18 +1,16 @@
-# ... your imports ...
-import os
+
+  import os
 import cv2
 import torch
 import base64
 import shutil
 import tempfile
 import numpy as np
-import random  # ✅ Needed for random.seed()
 from pathlib import Path
 from zipfile import ZipFile
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
-from sklearn.metrics.pairwise import cosine_similarity
 
 from processor import batch_clean_documents, auto_select_best_weight
 
@@ -70,26 +68,6 @@ async def process_document(file: UploadFile = File(...)):
     }
 
 
-def are_images_similar(folder, threshold=0.85):
-    vectors = []
-    for filename in os.listdir(folder):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-            img_path = os.path.join(folder, filename)
-            img = Image.open(img_path).convert("L").resize((128, 128))
-            vec = np.array(img).flatten()
-            vec = vec / np.linalg.norm(vec)
-            vectors.append(vec)
-
-    if len(vectors) < 2:
-        return True
-
-    sim_matrix = cosine_similarity(vectors)
-    sims = [sim_matrix[i][j] for i in range(len(vectors)) for j in range(i) if i != j]
-    avg_similarity = np.mean(sims)
-    print(f"🔬 Average image similarity: {avg_similarity:.2f}")
-    return avg_similarity >= threshold
-
-
 @app.post("/process-batch/")
 async def process_batch(file: UploadFile = File(...)):
     try:
@@ -107,53 +85,25 @@ async def process_batch(file: UploadFile = File(...)):
         with ZipFile(input_zip_path, 'r') as zip_ref:
             zip_ref.extractall(extracted_input_folder)
 
-        is_similar = are_images_similar(extracted_input_folder)
+        print("🧠 Skipping similarity check. Running full per-image weight tuning.")
 
-        if is_similar:
-            print("✅ Images are similar - using one shared best weight.")
-            sample_image = next(
-                (os.path.join(extracted_input_folder, f)
-                 for f in os.listdir(extracted_input_folder)
-                 if f.lower().endswith(('.png', '.jpg', '.jpeg'))),
-                None
-            )
-            if not sample_image:
-                raise HTTPException(status_code=400, detail="No valid image found.")
+        for img_file in os.listdir(extracted_input_folder):
+            if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                continue
 
-            best_weight_file = auto_select_best_weight("model_weights", sample_image)
-            weights_path = os.path.join("model_weights", best_weight_file)
+            img_path = os.path.join(extracted_input_folder, img_file)
+
+            best_weight_file = auto_select_best_weight("model_weights", img_path)
+            print(f"🧠 Tuning with weight: {best_weight_file} for {img_file}")
 
             batch_clean_documents(
-                weights_path=weights_path,
+                weights_path=os.path.join("model_weights", best_weight_file),
                 input_folder=extracted_input_folder,
                 output_folder=output_folder,
                 auto_tune=True
             )
-            result_note = "Images were similar - shared weight used."
-        else:
-            print("⚠️ Images differ - tuning weights per image.")
-            for img_file in os.listdir(extracted_input_folder):
-                if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    continue
 
-                img_path = os.path.join(extracted_input_folder, img_file)
-
-                # 🔒 Deterministic seed per image
-                seed = int.from_bytes(img_file.encode(), 'little') % (2**32)
-                torch.manual_seed(seed)
-                np.random.seed(seed)
-                random.seed(seed)
-                torch.backends.cudnn.deterministic = True
-                torch.backends.cudnn.benchmark = False
-
-                weight_file = auto_select_best_weight("model_weights", img_path)
-                batch_clean_documents(
-                    weights_path=os.path.join("model_weights", weight_file),
-                    input_folder=extracted_input_folder,
-                    output_folder=output_folder,
-                    auto_tune=True
-                )
-            result_note = "Images were diverse - tuned per image (slower)."
+        result_note = "All images tuned individually - no similarity check."
 
         with ZipFile(output_zip_path, 'w') as zipf:
             for root, _, files in os.walk(output_folder):
@@ -185,5 +135,3 @@ async def download_pdf(filename: str):
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type='application/pdf', filename=filename)
     raise HTTPException(status_code=404, detail="File not found")
-
-# ☁️ Uvicorn boot removed for GCP Cloud Run
