@@ -84,26 +84,38 @@ async def process_batch(file: UploadFile = File(...)):
         with ZipFile(input_zip_path, 'r') as zip_ref:
             zip_ref.extractall(extracted_input_folder)
 
-        print("🧠 Skipping similarity check. Running full per-image weight tuning.")
+        print("🧠 Sampling first 3 images to auto-select best weight...")
 
-        for img_file in os.listdir(extracted_input_folder):
-            if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                continue
+        # Step 1: Get first 3 valid images
+        image_files = [f for f in os.listdir(extracted_input_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        image_files = image_files[:3]
 
+        if not image_files:
+            raise HTTPException(status_code=400, detail="No valid images found in ZIP.")
+
+        # Step 2: Auto-select best weights for the first 3
+        weight_votes = []
+        for img_file in image_files:
             img_path = os.path.join(extracted_input_folder, img_file)
+            weight_file = auto_select_best_weight("model_weights", img_path)
+            weight_votes.append(weight_file)
+            print(f"🔍 {img_file} → {weight_file}")
 
-            best_weight_file = auto_select_best_weight("model_weights", img_path)
-            print(f"🧠 Tuning with weight: {best_weight_file} for {img_file}")
+        # Step 3: Pick most common weight (mode)
+        best_weight_file = max(set(weight_votes), key=weight_votes.count)
+        print(f"🏆 Final selected weight: {best_weight_file} (from top 3)")
 
-            batch_clean_documents(
-                weights_path=os.path.join("model_weights", best_weight_file),
-                input_folder=extracted_input_folder,
-                output_folder=output_folder,
-                auto_tune=True
-            )
+        # Step 4: Clean full batch using that weight
+        batch_clean_documents(
+            weights_path=os.path.join("model_weights", best_weight_file),
+            input_folder=extracted_input_folder,
+            output_folder=output_folder,
+            auto_tune=True
+        )
 
-        result_note = "All images tuned individually - no similarity check."
+        result_note = f"Sampled top 3 images. Using shared weight: {best_weight_file}"
 
+        # Step 5: Zip results
         with ZipFile(output_zip_path, 'w') as zipf:
             for root, _, files in os.walk(output_folder):
                 for f in files:
@@ -126,7 +138,6 @@ async def process_batch(file: UploadFile = File(...)):
     except Exception as e:
         print("🔥 SERVER ERROR:", str(e))
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-
 
 @app.get("/download/{filename}")
 async def download_pdf(filename: str):
