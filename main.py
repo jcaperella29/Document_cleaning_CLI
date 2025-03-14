@@ -1,4 +1,3 @@
-
 import os
 import cv2
 import torch
@@ -26,9 +25,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# ✅ FastAPI app instance exposed to Uvicorn (main:app)
 app = FastAPI(title="Document Cleaning API")
-
 
 @app.on_event("startup")
 async def startup_event():
@@ -111,7 +108,7 @@ async def process_batch(file: UploadFile = File(...)):
         is_similar = are_images_similar(extracted_input_folder)
 
         if is_similar:
-            print("✅ Images are similar — using one shared best weight.")
+            print("✅ Images are similar - using one shared best weight.")
             sample_image = next(
                 (os.path.join(extracted_input_folder, f)
                  for f in os.listdir(extracted_input_folder)
@@ -130,9 +127,9 @@ async def process_batch(file: UploadFile = File(...)):
                 output_folder=output_folder,
                 auto_tune=True
             )
-            result_note = "Images were similar — shared weight used."
+            result_note = "Images were similar - shared weight used."
         else:
-            print("⚠️ Images differ — tuning weights per image.")
+            print("⚠️ Images differ - tuning weights per image.")
             for img_file in os.listdir(extracted_input_folder):
                 if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
                     continue
@@ -144,7 +141,7 @@ async def process_batch(file: UploadFile = File(...)):
                     output_folder=output_folder,
                     auto_tune=True
                 )
-            result_note = "Images were diverse — tuned per image (slower)."
+            result_note = "Images were diverse - tuned per image (slower)."
 
         with ZipFile(output_zip_path, 'w') as zipf:
             for root, _, files in os.walk(output_folder):
@@ -156,15 +153,14 @@ async def process_batch(file: UploadFile = File(...)):
         if not os.path.exists(output_zip_path):
             raise HTTPException(status_code=500, detail="ZIP not created")
 
-       return FileResponse(
-    output_zip_path,
-    media_type="application/zip",
-    filename="cleaned_docs.zip",
-    headers={
-        "X-Note": result_note.replace("—", "-")  # ASCII-safe
-    }
-)
-
+        return FileResponse(
+            output_zip_path,
+            media_type="application/zip",
+            filename="cleaned_docs.zip",
+            headers={
+                "X-Note": result_note.replace("—", "-")
+            }
+        )
 
     except Exception as e:
         print("🔥 SERVER ERROR:", str(e))
@@ -178,4 +174,4 @@ async def download_pdf(filename: str):
         return FileResponse(file_path, media_type='application/pdf', filename=filename)
     raise HTTPException(status_code=404, detail="File not found")
 
-# ❌ Uvicorn run block intentionally removed for GCP Cloud Run
+# ☁️ Uvicorn boot removed for GCP Cloud Run
