@@ -1,3 +1,4 @@
+# ... your imports ...
 import os
 import cv2
 import torch
@@ -5,6 +6,7 @@ import base64
 import shutil
 import tempfile
 import numpy as np
+import random  # ✅ Needed for random.seed()
 from pathlib import Path
 from zipfile import ZipFile
 from PIL import Image
@@ -20,12 +22,12 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "processed")
 TEMP_DIR = os.path.join(BASE_DIR, "temp")
 
-# Init directories
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 app = FastAPI(title="Document Cleaning API")
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -133,7 +135,17 @@ async def process_batch(file: UploadFile = File(...)):
             for img_file in os.listdir(extracted_input_folder):
                 if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
                     continue
+
                 img_path = os.path.join(extracted_input_folder, img_file)
+
+                # 🔒 Deterministic seed per image
+                seed = int.from_bytes(img_file.encode(), 'little') % (2**32)
+                torch.manual_seed(seed)
+                np.random.seed(seed)
+                random.seed(seed)
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+
                 weight_file = auto_select_best_weight("model_weights", img_path)
                 batch_clean_documents(
                     weights_path=os.path.join("model_weights", weight_file),
