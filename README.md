@@ -1,3 +1,16 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/Cloud%20Run-Ready-blueviolet?logo=googlecloud&logoColor=white" />
+  <img src="https://img.shields.io/badge/FastAPI-%F0%9F%9A%80-green?logo=fastapi" />
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" />
+  <img src="https://img.shields.io/badge/Python-3.10-blue?logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Auto%20Tuning-Enabled-success?logo=ai" />
+</p>
+
+
+
+
+
+
 # 📄 Document Cleaner API 🧼🧠
 
 A high-performance Python system for **denoising scanned documents**, **enhancing text clarity**, and exporting **OCR-optimized PDFs** using deep learning + image processing.
