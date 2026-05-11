@@ -1,6 +1,7 @@
 import os
 import shutil
 import argparse
+import uuid
 
 import cv2
 import h5py
@@ -9,8 +10,9 @@ import torch.nn as nn
 import numpy as np
 from PIL import Image
 import pytesseract
-import uuid
+
 from docclean.manifest import build_manifest, write_manifest
+
 
 OCR_CONFIG = "--oem 3 --psm 6"
 
@@ -205,6 +207,46 @@ def ocr_text_quality(image, profile="ocr"):
         + (edge_score * 1.2)
         + (std_score * 8.0)
     )
+
+
+def ocr_metrics(image):
+    """
+    Return concrete OCR metrics for manifest.json and before/after comparisons.
+    """
+    data = pytesseract.image_to_data(
+        image,
+        config=OCR_CONFIG,
+        output_type=pytesseract.Output.DICT,
+    )
+
+    words = []
+    low_confidence_tokens = 0
+    confs = _safe_conf_values(data)
+
+    for text, conf in zip(data.get("text", []), data.get("conf", [])):
+        text = text.strip() if text else ""
+        if not text:
+            continue
+
+        words.append(text)
+
+        try:
+            conf_value = float(conf)
+        except (TypeError, ValueError):
+            continue
+
+        if 0 <= conf_value < 60:
+            low_confidence_tokens += 1
+
+    mean_confidence = float(np.mean(confs)) if confs else 0.0
+
+    return {
+        "mean_confidence": round(mean_confidence, 3),
+        "extracted_words": len(words),
+        "extracted_characters": sum(len(word) for word in words),
+        "low_confidence_tokens": low_confidence_tokens,
+        "text_preview": " ".join(words[:50]),
+    }
 
 
 def edge_aware_sharpen(image, strength=1.0, blur_sigma=1.0, edge_percentile=70):
@@ -461,6 +503,7 @@ def auto_tune_parameters(denoised_image, original_image=None, profile="human"):
 
     return best_image
 
+
 def batch_clean_documents(
     weights_path,
     input_folder,
@@ -481,6 +524,7 @@ def batch_clean_documents(
     processed_files = []
     failed_files = []
     manifest_outputs = {}
+    manifest_metrics = {}
     manifest_errors = []
 
     for filename in sorted(os.listdir(input_folder)):
@@ -499,6 +543,8 @@ def batch_clean_documents(
                 raise FileNotFoundError(
                     f"Input image not found or unreadable: {file_path}"
                 )
+
+            metrics_before = ocr_metrics(original_image)
 
             denoised_image = denoise_with_cnn(model, file_path)
 
@@ -541,6 +587,33 @@ def batch_clean_documents(
                     "pdf": pdf_output_path,
                 }
 
+            ocr_output = outputs["ocr"] if "ocr" in outputs else outputs["human"]
+            metrics_after = ocr_metrics(ocr_output)
+
+            manifest_metrics[filename] = {
+                "before": metrics_before,
+                "after": metrics_after,
+                "delta": {
+                    "mean_confidence": round(
+                        metrics_after["mean_confidence"]
+                        - metrics_before["mean_confidence"],
+                        3,
+                    ),
+                    "extracted_words": (
+                        metrics_after["extracted_words"]
+                        - metrics_before["extracted_words"]
+                    ),
+                    "extracted_characters": (
+                        metrics_after["extracted_characters"]
+                        - metrics_before["extracted_characters"]
+                    ),
+                    "low_confidence_tokens": (
+                        metrics_after["low_confidence_tokens"]
+                        - metrics_before["low_confidence_tokens"]
+                    ),
+                },
+            }
+
             processed_files.append(filename)
 
         except Exception as e:
@@ -565,6 +638,7 @@ def batch_clean_documents(
         ),
         input_file=input_folder,
         outputs=manifest_outputs,
+        metrics=manifest_metrics,
         model={
             "model_type": "DnCNN",
             "weights_path": weights_path,
@@ -572,11 +646,13 @@ def batch_clean_documents(
         steps=[
             "load_dncnn_model",
             "read_grayscale_image",
+            "measure_ocr_before",
             "cnn_denoise",
             "generate_human_output",
             "generate_ocr_output" if make_dual_output else "generate_single_output",
             "save_png",
             "save_pdf",
+            "measure_ocr_after",
         ],
         errors=manifest_errors,
     )
@@ -588,6 +664,7 @@ def batch_clean_documents(
         "failed": failed_files,
         "manifest": manifest_path,
     }
+
 
 def main():
     print("🚀 Running Document Cleaning CLI...")
@@ -672,6 +749,7 @@ def main():
             f"Processed: {len(result['processed'])}, "
             f"Failed: {len(result['failed'])}"
         )
+        print(f"🧾 Manifest saved to: {result['manifest']}")
 
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -680,3 +758,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
