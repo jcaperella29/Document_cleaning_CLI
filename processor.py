@@ -176,10 +176,10 @@ def ocr_text_quality(image, profile="ocr"):
     Score an image using OCR signal.
 
     human:
-        prefers readable, crisp text without going too harsh
+        favors readable/crisp text without being too harsh.
 
     ocr:
-        prefers OCR extraction quality much more aggressively
+        prioritizes OCR confidence and penalizes low-confidence junk tokens.
     """
     data = pytesseract.image_to_data(
         image,
@@ -197,17 +197,23 @@ def ocr_text_quality(image, profile="ocr"):
     edge_score = min(laplacian_var / 1000.0, 10.0)
 
     std_score = float(np.std(image)) / 255.0
+    low_conf_count = sum(1 for conf in confs if conf < 60)
 
     if profile == "human":
-        return (text_len * 1.0) + (mean_conf * 0.8) + (edge_score * 2.0)
+        return (
+            (text_len * 0.8)
+            + (mean_conf * 1.0)
+            + (edge_score * 2.0)
+            - (low_conf_count * 1.0)
+        )
 
     return (
-        (text_len * 1.2)
-        + (mean_conf * 1.8)
-        + (edge_score * 1.2)
-        + (std_score * 8.0)
+        (mean_conf * 5.0)
+        + (len(words) * 0.75)
+        + (edge_score * 0.5)
+        + (std_score * 2.0)
+        - (low_conf_count * 6.0)
     )
-
 
 def ocr_metrics(image):
     """
@@ -463,10 +469,10 @@ def auto_tune_parameters(denoised_image, original_image=None, profile="human"):
         thresholding_options = [False]
         morph_kernel_sizes = [0]
     else:
-        blend_factors = [0.0, 0.05, 0.10]
-        sharpen_levels = [1, 2, 3]
-        thresholding_options = [False, True]
-        morph_kernel_sizes = [0, 1]
+        blend_factors = [0.05, 0.10, 0.15]
+        sharpen_levels = [1, 2]
+        thresholding_options = [False]
+        morph_kernel_sizes = [0]
 
     for blend in blend_factors:
         for sharpen in sharpen_levels:
@@ -590,28 +596,53 @@ def batch_clean_documents(
             ocr_output = outputs["ocr"] if "ocr" in outputs else outputs["human"]
             metrics_after = ocr_metrics(ocr_output)
 
+            delta_mean_confidence = round(
+                metrics_after["mean_confidence"] - metrics_before["mean_confidence"],
+                3,
+            )
+            delta_extracted_words = (
+                metrics_after["extracted_words"] - metrics_before["extracted_words"]
+            )
+            delta_extracted_characters = (
+                metrics_after["extracted_characters"]
+                - metrics_before["extracted_characters"]
+            )
+            delta_low_confidence_tokens = (
+                metrics_after["low_confidence_tokens"]
+                - metrics_before["low_confidence_tokens"]
+            )
+
+            ocr_improved = (
+                delta_mean_confidence > 0
+                and delta_extracted_words >= 0
+            )
+
+            if ocr_improved and delta_low_confidence_tokens <= 0:
+                ocr_quality_note = (
+                    "OCR confidence improved and low-confidence token count did not increase."
+                )
+            elif ocr_improved:
+                ocr_quality_note = (
+                    "OCR confidence and extracted word count improved, "
+                    "but low-confidence token count also increased."
+                )
+            else:
+                ocr_quality_note = (
+                    "OCR metrics did not clearly improve. "
+                    "Review output before using as OCR-optimized result."
+                )
+
             manifest_metrics[filename] = {
                 "before": metrics_before,
                 "after": metrics_after,
                 "delta": {
-                    "mean_confidence": round(
-                        metrics_after["mean_confidence"]
-                        - metrics_before["mean_confidence"],
-                        3,
-                    ),
-                    "extracted_words": (
-                        metrics_after["extracted_words"]
-                        - metrics_before["extracted_words"]
-                    ),
-                    "extracted_characters": (
-                        metrics_after["extracted_characters"]
-                        - metrics_before["extracted_characters"]
-                    ),
-                    "low_confidence_tokens": (
-                        metrics_after["low_confidence_tokens"]
-                        - metrics_before["low_confidence_tokens"]
-                    ),
+                    "mean_confidence": delta_mean_confidence,
+                    "extracted_words": delta_extracted_words,
+                    "extracted_characters": delta_extracted_characters,
+                    "low_confidence_tokens": delta_low_confidence_tokens,
                 },
+                "ocr_improved": ocr_improved,
+                "ocr_quality_note": ocr_quality_note,
             }
 
             processed_files.append(filename)
