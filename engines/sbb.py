@@ -13,7 +13,7 @@ def run_sbb_binarization(
     Run SBB binarization through a pinned conda env.
 
     SBB needs an older TensorFlow/Keras stack, so we intentionally run it
-    as a subprocess instead of importing it into the main app.
+    as a subprocess instead of importing it into the main PyTorch/OpenCV app.
     """
     input_file = Path(input_path)
     output_file = Path(output_path)
@@ -24,6 +24,9 @@ def run_sbb_binarization(
 
     if not model_path.exists():
         raise FileNotFoundError(f"SBB model directory not found: {model_path}")
+
+    if output_file.suffix.lower() not in {".png", ".tif", ".tiff"}:
+        raise ValueError("SBB output_path must end with .png, .tif, or .tiff")
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -61,7 +64,7 @@ def run_sbb_binarization(
     if not output_file.exists():
         raise RuntimeError(
             "SBB completed but did not create an output file.\n"
-            f"Expected: {output_file}\n"
+            f"Expected: {output_file}\n\n"
             f"STDOUT:\n{result.stdout}\n\n"
             f"STDERR:\n{result.stderr}"
         )
