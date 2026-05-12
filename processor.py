@@ -256,6 +256,100 @@ def ocr_metrics(image):
     }
 
 
+def compare_ocr_metrics(before_metrics, after_metrics):
+    """
+    Build delta metrics and a simple OCR-improvement interpretation.
+    """
+    delta_mean_confidence = round(
+        after_metrics["mean_confidence"] - before_metrics["mean_confidence"],
+        3,
+    )
+    delta_extracted_words = (
+        after_metrics["extracted_words"] - before_metrics["extracted_words"]
+    )
+    delta_extracted_characters = (
+        after_metrics["extracted_characters"]
+        - before_metrics["extracted_characters"]
+    )
+    delta_low_confidence_tokens = (
+        after_metrics["low_confidence_tokens"]
+        - before_metrics["low_confidence_tokens"]
+    )
+
+    ocr_improved = (
+        delta_mean_confidence > 0
+        and delta_extracted_words >= 0
+    )
+
+    if ocr_improved and delta_low_confidence_tokens <= 0:
+        ocr_quality_note = (
+            "OCR confidence improved and low-confidence token count did not increase."
+        )
+    elif ocr_improved:
+        ocr_quality_note = (
+            "OCR confidence and extracted word count improved, "
+            "but low-confidence token count also increased."
+        )
+    else:
+        ocr_quality_note = (
+            "OCR metrics did not clearly improve. "
+            "Review output before using as OCR-optimized result."
+        )
+
+    return {
+        "delta": {
+            "mean_confidence": delta_mean_confidence,
+            "extracted_words": delta_extracted_words,
+            "extracted_characters": delta_extracted_characters,
+            "low_confidence_tokens": delta_low_confidence_tokens,
+        },
+        "ocr_improved": ocr_improved,
+        "recommended_for_ocr": ocr_improved,
+        "ocr_quality_note": ocr_quality_note,
+    }
+
+
+def score_ocr_candidate(comparison):
+    """
+    Score a candidate using OCR deltas.
+
+    This version strongly penalizes outputs that destroy extracted text.
+    A candidate should not win just because it reduced low-confidence tokens
+    by making Tesseract read almost nothing.
+    """
+    delta = comparison["delta"]
+
+    confidence_delta = delta["mean_confidence"]
+    word_delta = delta["extracted_words"]
+    character_delta = delta["extracted_characters"]
+    low_conf_delta = delta["low_confidence_tokens"]
+
+    score = (
+        (confidence_delta * 5.0)
+        + (word_delta * 2.0)
+        + (character_delta * 0.15)
+        - max(low_conf_delta, 0) * 1.5
+    )
+
+    # Heavy penalty for destructive OCR collapse.
+    if word_delta < 0:
+        score += word_delta * 4.0
+
+    if character_delta < 0:
+        score += character_delta * 0.35
+
+    # Reward reducing low-confidence tokens only if text was not lost.
+    if low_conf_delta < 0 and word_delta >= 0 and character_delta >= 0:
+        score += abs(low_conf_delta) * 1.0
+
+    # Strong reward for clear useful improvement.
+    if comparison["ocr_improved"]:
+        score += 10.0
+
+    return round(score, 3)
+
+
+
 def edge_aware_sharpen(image, strength=1.0, blur_sigma=1.0, edge_percentile=70):
     if strength <= 0:
         return image.copy()
@@ -524,11 +618,13 @@ def batch_clean_documents(
     configure_tesseract()
     validate_input_folder(input_folder)
 
-    if engine not in {"cnn", "sbb"}:
-        raise ValueError(f"Unsupported engine: {engine}. Expected 'cnn' or 'sbb'.")
+    if engine not in {"cnn", "sbb", "auto"}:
+        raise ValueError(
+            f"Unsupported engine: {engine}. Expected 'cnn', 'sbb', or 'auto'."
+        )
 
     model = None
-    if engine == "cnn":
+    if engine in {"cnn", "auto"}:
         model = DnCNN(channels=1, num_of_layers=17)
         load_h5_weights(weights_path, model)
         model.eval()
@@ -561,6 +657,9 @@ def batch_clean_documents(
 
             metrics_before = ocr_metrics(original_image)
 
+            candidate_metrics = {}
+            selected_engine_for_file = engine
+
             if engine == "cnn":
                 denoised_image = denoise_with_cnn(model, file_path)
 
@@ -582,7 +681,8 @@ def batch_clean_documents(
                             sharpen_level=2,
                         )
                     }
-            else:
+
+            elif engine == "sbb":
                 sbb_image_path = os.path.join(
                     output_folder,
                     f"{base_name}_sbb.png",
@@ -602,6 +702,88 @@ def batch_clean_documents(
                     "human": sbb_image,
                     "ocr": sbb_image,
                 }
+
+            else:
+                candidates = {}
+
+                denoised_image = denoise_with_cnn(model, file_path)
+                cnn_outputs = generate_dual_outputs(
+                    denoised_image,
+                    original_image=original_image,
+                    auto_tune=auto_tune,
+                )
+
+                cnn_ocr_output = (
+                    cnn_outputs["ocr"]
+                    if "ocr" in cnn_outputs
+                    else cnn_outputs["human"]
+                )
+                cnn_after_metrics = ocr_metrics(cnn_ocr_output)
+                cnn_comparison = compare_ocr_metrics(
+                    metrics_before,
+                    cnn_after_metrics,
+                )
+                cnn_score = score_ocr_candidate(cnn_comparison)
+
+                candidates["cnn"] = {
+                    "outputs": cnn_outputs,
+                    "after": cnn_after_metrics,
+                    "comparison": cnn_comparison,
+                    "score": cnn_score,
+                }
+
+                sbb_image_path = os.path.join(
+                    output_folder,
+                    f"{base_name}_sbb_candidate.png",
+                )
+                run_sbb_binarization(
+                    input_path=file_path,
+                    output_path=sbb_image_path,
+                    model_dir=sbb_model_dir,
+                    conda_env=sbb_conda_env,
+                )
+
+                sbb_image = cv2.imread(sbb_image_path, cv2.IMREAD_GRAYSCALE)
+                if sbb_image is None:
+                    raise RuntimeError(f"SBB output was not readable: {sbb_image_path}")
+
+                sbb_outputs = {
+                    "human": sbb_image,
+                    "ocr": sbb_image,
+                }
+                sbb_after_metrics = ocr_metrics(sbb_image)
+                sbb_comparison = compare_ocr_metrics(
+                    metrics_before,
+                    sbb_after_metrics,
+                )
+                sbb_score = score_ocr_candidate(sbb_comparison)
+
+                candidates["sbb"] = {
+                    "outputs": sbb_outputs,
+                    "after": sbb_after_metrics,
+                    "comparison": sbb_comparison,
+                    "score": sbb_score,
+                }
+
+                selected_engine_for_file = max(
+                    candidates,
+                    key=lambda name: candidates[name]["score"],
+                )
+                outputs = candidates[selected_engine_for_file]["outputs"]
+
+                candidate_metrics = {
+                    name: {
+                        "score": data["score"],
+                        "after": data["after"],
+                        **data["comparison"],
+                    }
+                    for name, data in candidates.items()
+                }
+
+                print(
+                    f"🤖 Auto selected {selected_engine_for_file} for {filename} "
+                    f"(cnn={cnn_score}, sbb={sbb_score})"
+                )
 
             manifest_outputs[filename] = {}
 
@@ -662,18 +844,17 @@ def batch_clean_documents(
                     "Review output before using as OCR-optimized result."
                 )
 
+            comparison = compare_ocr_metrics(metrics_before, metrics_after)
+
             manifest_metrics[filename] = {
                 "before": metrics_before,
                 "after": metrics_after,
-                "delta": {
-                    "mean_confidence": delta_mean_confidence,
-                    "extracted_words": delta_extracted_words,
-                    "extracted_characters": delta_extracted_characters,
-                    "low_confidence_tokens": delta_low_confidence_tokens,
-                },
-                "ocr_improved": ocr_improved,
-                "ocr_quality_note": ocr_quality_note,
+                **comparison,
+                "selected_engine": selected_engine_for_file,
             }
+
+            if candidate_metrics:
+                manifest_metrics[filename]["candidate_metrics"] = candidate_metrics
 
             processed_files.append(filename)
 
@@ -710,7 +891,7 @@ def batch_clean_documents(
             "save_pdf",
             "measure_ocr_after",
         ]
-    else:
+    elif engine == "sbb":
         selected_profile = "sbb-binarization"
         model_info = {
             "model_type": "SBB Binarization",
@@ -721,6 +902,33 @@ def batch_clean_documents(
             "read_grayscale_image",
             "measure_ocr_before",
             "sbb_binarize",
+            "save_png",
+            "save_pdf",
+            "measure_ocr_after",
+        ]
+    else:
+        selected_profile = "auto-cnn-vs-sbb"
+        model_info = {
+            "candidate_engines": {
+                "cnn": {
+                    "model_type": "DnCNN",
+                    "weights_path": weights_path,
+                },
+                "sbb": {
+                    "model_type": "SBB Binarization",
+                    "model_dir": sbb_model_dir,
+                    "conda_env": sbb_conda_env,
+                },
+            }
+        }
+        steps = [
+            "load_dncnn_model",
+            "read_grayscale_image",
+            "measure_ocr_before",
+            "cnn_candidate",
+            "sbb_candidate",
+            "score_candidates",
+            "select_best_engine_per_file",
             "save_png",
             "save_pdf",
             "measure_ocr_after",
@@ -789,7 +997,7 @@ def main():
     )
     parser.add_argument(
         "--engine",
-        choices=["cnn", "sbb"],
+        choices=["cnn", "sbb", "auto"],
         default="cnn",
         help="Cleaning engine to use. Default: cnn",
     )
@@ -830,9 +1038,9 @@ def main():
         weights_path = os.path.join(args.weights_folder, best_weight)
 
         print(f"🧰 Engine: {args.engine}")
-        if args.engine == "cnn":
+        if args.engine in {"cnn", "auto"}:
             print(f"📂 Using weights: {weights_path}")
-        else:
+        if args.engine in {"sbb", "auto"}:
             print(f"📂 Using SBB model dir: {args.sbb_model_dir}")
             print(f"🐍 Using SBB conda env: {args.sbb_conda_env}")
         print(f"📥 Input folder: {args.input_folder}")
@@ -863,3 +1071,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
