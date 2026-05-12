@@ -12,6 +12,7 @@ from PIL import Image
 import pytesseract
 
 from docclean.manifest import build_manifest, write_manifest
+from docclean.engines.sbb import run_sbb_binarization
 
 
 OCR_CONFIG = "--oem 3 --psm 6"
@@ -516,13 +517,21 @@ def batch_clean_documents(
     output_folder,
     auto_tune=True,
     make_dual_output=True,
+    engine="cnn",
+    sbb_model_dir="external_models/sbb_binarization/saved_model",
+    sbb_conda_env="sbb310",
 ):
     configure_tesseract()
     validate_input_folder(input_folder)
 
-    model = DnCNN(channels=1, num_of_layers=17)
-    load_h5_weights(weights_path, model)
-    model.eval()
+    if engine not in {"cnn", "sbb"}:
+        raise ValueError(f"Unsupported engine: {engine}. Expected 'cnn' or 'sbb'.")
+
+    model = None
+    if engine == "cnn":
+        model = DnCNN(channels=1, num_of_layers=17)
+        load_h5_weights(weights_path, model)
+        model.eval()
 
     os.makedirs(output_folder, exist_ok=True)
 
@@ -552,25 +561,46 @@ def batch_clean_documents(
 
             metrics_before = ocr_metrics(original_image)
 
-            denoised_image = denoise_with_cnn(model, file_path)
+            if engine == "cnn":
+                denoised_image = denoise_with_cnn(model, file_path)
 
-            if make_dual_output:
-                outputs = generate_dual_outputs(
-                    denoised_image,
-                    original_image=original_image,
-                    auto_tune=auto_tune,
-                )
-            else:
-                outputs = {
-                    "human": post_process_document(
+                if make_dual_output:
+                    outputs = generate_dual_outputs(
                         denoised_image,
                         original_image=original_image,
-                        profile="human",
-                        apply_thresholding=False,
-                        blend_factor=0.12,
-                        morph_kernel_size=0,
-                        sharpen_level=2,
+                        auto_tune=auto_tune,
                     )
+                else:
+                    outputs = {
+                        "human": post_process_document(
+                            denoised_image,
+                            original_image=original_image,
+                            profile="human",
+                            apply_thresholding=False,
+                            blend_factor=0.12,
+                            morph_kernel_size=0,
+                            sharpen_level=2,
+                        )
+                    }
+            else:
+                sbb_image_path = os.path.join(
+                    output_folder,
+                    f"{base_name}_sbb.png",
+                )
+                run_sbb_binarization(
+                    input_path=file_path,
+                    output_path=sbb_image_path,
+                    model_dir=sbb_model_dir,
+                    conda_env=sbb_conda_env,
+                )
+
+                sbb_image = cv2.imread(sbb_image_path, cv2.IMREAD_GRAYSCALE)
+                if sbb_image is None:
+                    raise RuntimeError(f"SBB output was not readable: {sbb_image_path}")
+
+                outputs = {
+                    "human": sbb_image,
+                    "ocr": sbb_image,
                 }
 
             manifest_outputs[filename] = {}
@@ -657,24 +687,19 @@ def batch_clean_documents(
                 }
             )
 
-    manifest = build_manifest(
-        job_id=job_id,
-        engine="cnn",
-        selected_profile=(
+    if engine == "cnn":
+        selected_profile = (
             "cnn+dual-output+auto-tune"
             if auto_tune and make_dual_output
             else "cnn+single-output"
             if not make_dual_output
             else "cnn+dual-output"
-        ),
-        input_file=input_folder,
-        outputs=manifest_outputs,
-        metrics=manifest_metrics,
-        model={
+        )
+        model_info = {
             "model_type": "DnCNN",
             "weights_path": weights_path,
-        },
-        steps=[
+        }
+        steps = [
             "load_dncnn_model",
             "read_grayscale_image",
             "measure_ocr_before",
@@ -684,7 +709,32 @@ def batch_clean_documents(
             "save_png",
             "save_pdf",
             "measure_ocr_after",
-        ],
+        ]
+    else:
+        selected_profile = "sbb-binarization"
+        model_info = {
+            "model_type": "SBB Binarization",
+            "model_dir": sbb_model_dir,
+            "conda_env": sbb_conda_env,
+        }
+        steps = [
+            "read_grayscale_image",
+            "measure_ocr_before",
+            "sbb_binarize",
+            "save_png",
+            "save_pdf",
+            "measure_ocr_after",
+        ]
+
+    manifest = build_manifest(
+        job_id=job_id,
+        engine=engine,
+        selected_profile=selected_profile,
+        input_file=input_folder,
+        outputs=manifest_outputs,
+        metrics=manifest_metrics,
+        model=model_info,
+        steps=steps,
         errors=manifest_errors,
     )
 
@@ -737,6 +787,22 @@ def main():
         action="store_true",
         help="Only save the human-readable output instead of both human and OCR outputs",
     )
+    parser.add_argument(
+        "--engine",
+        choices=["cnn", "sbb"],
+        default="cnn",
+        help="Cleaning engine to use. Default: cnn",
+    )
+    parser.add_argument(
+        "--sbb-model-dir",
+        default="external_models/sbb_binarization/saved_model",
+        help="SBB model directory. Used only with --engine sbb.",
+    )
+    parser.add_argument(
+        "--sbb-conda-env",
+        default="sbb310",
+        help="Conda environment containing sbb_binarize. Used only with --engine sbb.",
+    )
 
     args = parser.parse_args()
 
@@ -745,7 +811,7 @@ def main():
         mat_files = validate_weights_folder(args.weights_folder)
         validate_input_folder(args.input_folder)
 
-        if args.auto_select:
+        if args.engine == "cnn" and args.auto_select:
             print("🔍 Auto-selecting best weight...")
             sample_image = next(
                 os.path.join(args.input_folder, f)
@@ -755,7 +821,7 @@ def main():
             best_weight = auto_select_best_weight(args.weights_folder, sample_image)
         else:
             best_weight = "sigma=10.mat" if "sigma=10.mat" in mat_files else mat_files[0]
-            if best_weight != "sigma=10.mat":
+            if args.engine == "cnn" and best_weight != "sigma=10.mat":
                 print(
                     f"⚠️ Default weight sigma=10.mat not found. "
                     f"Falling back to: {best_weight}"
@@ -763,7 +829,12 @@ def main():
 
         weights_path = os.path.join(args.weights_folder, best_weight)
 
-        print(f"📂 Using weights: {weights_path}")
+        print(f"🧰 Engine: {args.engine}")
+        if args.engine == "cnn":
+            print(f"📂 Using weights: {weights_path}")
+        else:
+            print(f"📂 Using SBB model dir: {args.sbb_model_dir}")
+            print(f"🐍 Using SBB conda env: {args.sbb_conda_env}")
         print(f"📥 Input folder: {args.input_folder}")
         print(f"📤 Output folder: {args.output_folder}")
 
@@ -773,6 +844,9 @@ def main():
             output_folder=args.output_folder,
             auto_tune=args.auto_tune,
             make_dual_output=not args.single_output,
+            engine=args.engine,
+            sbb_model_dir=args.sbb_model_dir,
+            sbb_conda_env=args.sbb_conda_env,
         )
 
         print(
@@ -789,4 +863,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
