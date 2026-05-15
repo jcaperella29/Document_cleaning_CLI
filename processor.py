@@ -313,9 +313,11 @@ def score_ocr_candidate(comparison):
     """
     Score a candidate using OCR deltas.
 
-    This version strongly penalizes outputs that destroy extracted text.
-    A candidate should not win just because it reduced low-confidence tokens
-    by making Tesseract read almost nothing.
+    Preference order:
+    1. Prefer candidates that clearly improve OCR.
+    2. Penalize outputs that destroy extracted text.
+    3. Reward confidence, words, and characters.
+    4. Penalize added low-confidence tokens.
     """
     delta = comparison["delta"]
 
@@ -331,20 +333,21 @@ def score_ocr_candidate(comparison):
         - max(low_conf_delta, 0) * 1.5
     )
 
+    if comparison["ocr_improved"]:
+        score += 25.0
+    else:
+        score -= 25.0
+
     # Heavy penalty for destructive OCR collapse.
     if word_delta < 0:
-        score += word_delta * 4.0
+        score += word_delta * 6.0
 
     if character_delta < 0:
-        score += character_delta * 0.35
+        score += character_delta * 0.45
 
     # Reward reducing low-confidence tokens only if text was not lost.
     if low_conf_delta < 0 and word_delta >= 0 and character_delta >= 0:
         score += abs(low_conf_delta) * 1.0
-
-    # Strong reward for clear useful improvement.
-    if comparison["ocr_improved"]:
-        score += 10.0
 
     return round(score, 3)
 
@@ -1019,8 +1022,8 @@ def main():
         mat_files = validate_weights_folder(args.weights_folder)
         validate_input_folder(args.input_folder)
 
-        if args.engine == "cnn" and args.auto_select:
-            print("🔍 Auto-selecting best weight...")
+        if args.engine in {"cnn", "auto"} and args.auto_select:
+            print("🔍 Auto-selecting best CNN weight...")
             sample_image = next(
                 os.path.join(args.input_folder, f)
                 for f in sorted(os.listdir(args.input_folder))
@@ -1029,7 +1032,7 @@ def main():
             best_weight = auto_select_best_weight(args.weights_folder, sample_image)
         else:
             best_weight = "sigma=10.mat" if "sigma=10.mat" in mat_files else mat_files[0]
-            if args.engine == "cnn" and best_weight != "sigma=10.mat":
+            if args.engine in {"cnn", "auto"} and best_weight != "sigma=10.mat":
                 print(
                     f"⚠️ Default weight sigma=10.mat not found. "
                     f"Falling back to: {best_weight}"
@@ -1067,8 +1070,4 @@ def main():
     except Exception as e:
         print(f"❌ Error: {e}")
         raise
-
-
-if __name__ == "__main__":
-    main()
 
